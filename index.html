@@ -1278,11 +1278,13 @@ function removeEntry(id) {
 // ── PAGAR FATURA ──
 function pagarFatura() {
   const visible = getVisibleEntries(selectedMonth, selectedYear);
+  let totalPago = 0;
   let changed = 0;
+
   visible.forEach(entry => {
     if (!entry.paid) {
+      const valorParcela = entry.parcelas > 1 ? (Number(entry.parcelValue)||0) : (Number(entry.value)||0);
       if (entry.parcelas > 1) {
-        // mark this month's parcel as paid
         const monthOffset = (selectedYear - entry.year) * 12 + (selectedMonth - entry.month);
         if (monthOffset >= 0 && monthOffset < entry.parcelas) {
           entry.parcelPaid = Math.max(entry.parcelPaid, monthOffset + 1);
@@ -1291,12 +1293,24 @@ function pagarFatura() {
       } else {
         entry.paid = true;
       }
+      totalPago += valorParcela;
       changed++;
     }
   });
+
   if (changed > 0) {
+    // Debitar do saldo: adicionar uma entrada negativa
+    entries.push({
+      id: Date.now() + '',
+      type: 'income',
+      desc: 'Pagamento de fatura — ' + MONTHS_FULL[selectedMonth] + '/' + selectedYear,
+      emoji: '💳',
+      value: -totalPago,
+      month: selectedMonth,
+      year: selectedYear
+    });
     save();
-    toast('Fatura paga! 🎉','gold');
+    toast('Fatura paga! − R$ ' + fmt(totalPago) + ' do saldo','gold');
     render();
   } else {
     toast('Fatura já está zerada','');
