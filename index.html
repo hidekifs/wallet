@@ -816,8 +816,12 @@
     <div class="fatura-info">
       <div class="fatura-label">Fatura do Mês</div>
       <div class="fatura-amount" id="faturaAmount">R$ 0,00</div>
+      <div id="faturaRestanteRow" style="display:none;margin-top:6px;font-size:11px;color:var(--text3);">
+        Pago: <span id="faturaPagoVal" style="color:var(--green)">R$ 0,00</span>
+        &nbsp;·&nbsp; Restante: <span id="faturaRestanteVal" style="color:var(--orange)">R$ 0,00</span>
+      </div>
     </div>
-    <button class="fatura-btn" onclick="pagarFatura()">✓ Pagar Fatura</button>
+    <button class="fatura-btn" onclick="openModal('pagarFatura')">✓ Pagar Fatura</button>
   </div>
 
   <!-- ACTIONS -->
@@ -1013,6 +1017,27 @@
     <button class="cancel-btn" onclick="closeModal('overlayHistCofre')">Fechar</button>
   </div>
 </div>
+<!-- MODAL PAGAR FATURA -->
+<div class="overlay" id="overlayPagarFatura" onclick="closeModalOnBg(event,'overlayPagarFatura')">
+  <div class="modal">
+    <div class="modal-title">Pagar <span>Fatura</span></div>
+
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:18px;">
+      <div style="font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:var(--text3);margin-bottom:6px;">Total da fatura</div>
+      <div style="font-family:'Playfair Display',serif;font-size:26px;font-weight:600;color:var(--text)" id="faturaModalTotal">R$ 0,00</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;" id="faturaModalDesc"></div>
+    </div>
+
+    <div class="field">
+      <label>Valor que vai pagar (R$)</label>
+      <input type="number" id="faturaValorPagar" placeholder="0,00" step="0.01" min="0" />
+    </div>
+
+    <button class="submit-btn" onclick="confirmarPagamentoFatura()">Confirmar Pagamento</button>
+    <button class="cancel-btn" onclick="closeModal('overlayPagarFatura')">Cancelar</button>
+  </div>
+</div>
+
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
 
@@ -1021,6 +1046,8 @@
 <script>
 // ── DATA ──
 let entries = JSON.parse(localStorage.getItem('carteira_entries') || '[]');
+let faturasPagas = JSON.parse(localStorage.getItem('carteira_faturas') || '{}');
+function saveFaturas() { localStorage.setItem('carteira_faturas', JSON.stringify(faturasPagas)); }
 let selectedMonth = new Date().getMonth();
 let selectedYear = new Date().getFullYear();
 let parcelado = false;
@@ -1125,9 +1152,21 @@ function render() {
   }, 0);
   document.getElementById('totalFuture').textContent = 'R$ ' + fmt(futureInst);
 
-  // Fatura = month expenses unpaid
-  const fatura = visible.filter(e=>e.type==='expense' && !e.paid).reduce((s,e) => s + (e.parcelas>1 ? (Number(e.parcelValue)||0) : (Number(e.value)||0)), 0);
-  document.getElementById('faturaAmount').textContent = 'R$ ' + fmt(fatura);
+  // Fatura total do mês (todos os gastos, pagos ou não)
+  const faturaTotal = visible.filter(e=>e.type==='expense').reduce((s,e) => s + (e.parcelas>1 ? (Number(e.parcelValue)||0) : (Number(e.value)||0)), 0);
+  // Quanto já foi pago desta fatura
+  const fatKey = selectedYear + '-' + selectedMonth;
+  const faturaPago = Number((faturasPagas[fatKey]||{}).pago) || 0;
+  const faturaRestante = Math.max(0, faturaTotal - faturaPago);
+  document.getElementById('faturaAmount').textContent = 'R$ ' + fmt(faturaRestante);
+  const restRow = document.getElementById('faturaRestanteRow');
+  if (faturaPago > 0) {
+    restRow.style.display = 'block';
+    document.getElementById('faturaPagoVal').textContent = 'R$ ' + fmt(faturaPago);
+    document.getElementById('faturaRestanteVal').textContent = 'R$ ' + fmt(faturaRestante);
+  } else {
+    restRow.style.display = 'none';
+  }
 
   // List
   const list = document.getElementById('listArea');
@@ -1276,46 +1315,64 @@ function removeEntry(id) {
 }
 
 // ── PAGAR FATURA ──
-function pagarFatura() {
-  const visible = getVisibleEntries(selectedMonth, selectedYear);
-  let totalPago = 0;
-  let changed = 0;
+function preencherFaturaTotal() {
+  document.getElementById('faturaValorPagar').value = (window._faturaTotal || 0).toFixed(2);
+}
+function preencherFaturaMeta(frac) {
+  document.getElementById('faturaValorPagar').value = ((window._faturaTotal || 0) * frac).toFixed(2);
+}
 
-  visible.forEach(entry => {
-    if (!entry.paid) {
-      const valorParcela = entry.parcelas > 1 ? (Number(entry.parcelValue)||0) : (Number(entry.value)||0);
+function confirmarPagamentoFatura() {
+  const valorPagar = parseFloat(document.getElementById('faturaValorPagar').value);
+  if (!valorPagar || valorPagar <= 0) { toast('Informe o valor a pagar',''); return; }
+
+  const restante = window._faturaTotal || 0;
+  if (valorPagar > restante + 0.01) { toast('Valor maior que o restante da fatura',''); return; }
+
+  // Registra pagamento parcial/total no mapa de faturas pagas
+  const fatKey = selectedYear + '-' + selectedMonth;
+  if (!faturasPagas[fatKey]) faturasPagas[fatKey] = { pago: 0 };
+  faturasPagas[fatKey].pago = (Number(faturasPagas[fatKey].pago)||0) + valorPagar;
+  saveFaturas();
+
+  // Se pagou tudo, marca os itens como pagos também
+  const visible = getVisibleEntries(selectedMonth, selectedYear);
+  const fatTotal = visible.filter(e=>e.type==='expense').reduce((s,e)=>s+(e.parcelas>1?(Number(e.parcelValue)||0):(Number(e.value)||0)),0);
+  const totalPago = faturasPagas[fatKey].pago;
+
+  if (totalPago >= fatTotal - 0.01) {
+    // Fatura totalmente quitada — marca todos os itens do mês como pagos
+    visible.filter(e=>e.type==='expense' && !e.paid).forEach(entry => {
       if (entry.parcelas > 1) {
         const monthOffset = (selectedYear - entry.year) * 12 + (selectedMonth - entry.month);
-        if (monthOffset >= 0 && monthOffset < entry.parcelas) {
+        if (monthOffset >= 0 && monthOffset < entry.parcelas)
           entry.parcelPaid = Math.max(entry.parcelPaid, monthOffset + 1);
-        }
         if (entry.parcelPaid >= entry.parcelas) entry.paid = true;
       } else {
         entry.paid = true;
       }
-      totalPago += valorParcela;
-      changed++;
-    }
+    });
+  }
+
+  // Debitar do saldo
+  entries.push({
+    id: Date.now() + '',
+    type: 'income',
+    desc: 'Pagamento de fatura — ' + MONTHS_FULL[selectedMonth] + '/' + selectedYear,
+    emoji: '💳',
+    value: -valorPagar,
+    month: selectedMonth,
+    year: selectedYear
   });
 
-  if (changed > 0) {
-    // Debitar do saldo: adicionar uma entrada negativa
-    entries.push({
-      id: Date.now() + '',
-      type: 'income',
-      desc: 'Pagamento de fatura — ' + MONTHS_FULL[selectedMonth] + '/' + selectedYear,
-      emoji: '💳',
-      value: -totalPago,
-      month: selectedMonth,
-      year: selectedYear
-    });
-    save();
-    toast('Fatura paga! − R$ ' + fmt(totalPago) + ' do saldo','gold');
-    render();
-  } else {
-    toast('Fatura já está zerada','');
-  }
+  save();
+  closeModal('overlayPagarFatura');
+  const isParcial = totalPago < fatTotal - 0.01;
+  toast((isParcial ? 'Pagamento parcial' : 'Fatura quitada! 🎉') + ' − R$ ' + fmt(valorPagar), 'gold');
+  render();
 }
+
+function pagarFatura() { openModal('pagarFatura'); }
 
 // ── TOAST ──
 function toast(msg, type) {
@@ -1363,6 +1420,19 @@ function openModal(type) {
     document.getElementById('metaDesc').value = cofrinho.metaDesc || '';
     document.getElementById('metaValor').value = cofrinho.meta > 0 ? cofrinho.meta : '';
     document.getElementById('overlayMeta').classList.add('open');
+    return;
+  }
+  if (type === 'pagarFatura') {
+    const visible = getVisibleEntries(selectedMonth, selectedYear);
+    const fatTotal = visible.filter(e=>e.type==='expense').reduce((s,e)=>s+(e.parcelas>1?(Number(e.parcelValue)||0):(Number(e.value)||0)),0);
+    const fatKey = selectedYear + '-' + selectedMonth;
+    const jaPago = Number((faturasPagas[fatKey]||{}).pago) || 0;
+    const restante = Math.max(0, fatTotal - jaPago);
+    document.getElementById('faturaModalTotal').textContent = 'R$ ' + fmt(restante);
+    document.getElementById('faturaModalDesc').textContent = restante === 0 ? 'Fatura já quitada ✓' : (jaPago > 0 ? 'Já pago: R$ ' + fmt(jaPago) + ' · Restante de R$ ' + fmt(fatTotal) : MONTHS_FULL[selectedMonth] + ' ' + selectedYear);
+    document.getElementById('faturaValorPagar').value = '';
+    window._faturaTotal = restante;
+    document.getElementById('overlayPagarFatura').classList.add('open');
     return;
   }
   if (type === 'histCofre') {
